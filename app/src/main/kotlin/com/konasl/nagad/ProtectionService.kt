@@ -1,6 +1,7 @@
 package com.konasl.nagad
 
 import android.app.*
+import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -41,10 +42,11 @@ class ProtectionService : Service() {
         registerScreenReceiver()
         startProtectionLoop()
         
-        Log.d(TAG, "🛡️ প্রোটেকশন সার্ভিস ক্রিয়েটেড")
+        Log.d(TAG, "🛡️ প্রোটেকশন সার্ভিস তৈরি")
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d(TAG, "🛡️ সার্ভিস শুরু (START_STICKY)")
         return START_STICKY
     }
     
@@ -52,13 +54,30 @@ class ProtectionService : Service() {
     
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "🛡️ সার্ভিস ধ্বংস - অটো রিস্টার্ট হবে")
+        
         handler.removeCallbacksAndMessages(null)
         removeOverlay()
-        screenReceiver?.let { unregisterReceiver(it) }
+        
+        screenReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: Exception) {
+                Log.e(TAG, "Receiver unregister failed", e)
+            }
+        }
         
         // অটো রিস্টার্ট
-        val restartIntent = Intent(this, ProtectionService::class.java)
-        startService(restartIntent)
+        try {
+            val restartIntent = Intent(this, ProtectionService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(restartIntent)
+            } else {
+                startService(restartIntent)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Auto restart failed", e)
+        }
     }
     
     private fun createNotificationChannel() {
@@ -67,20 +86,24 @@ class ProtectionService : Service() {
                 CHANNEL_ID,
                 "Protection Service",
                 NotificationManager.IMPORTANCE_LOW
-            ).apply { setShowBadge(false) }
+            ).apply {
+                description = "ম্যালওয়্যার প্রোটেকশন সার্ভিস"
+                setShowBadge(false)
+            }
             
-            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-                .createNotificationChannel(channel)
+            val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
         }
     }
     
     private fun createNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("🛡️ Nagad Defender")
-            .setContentText("প্রোটেকশন অ্যাক্টিভ | টার্গেট: $MALWARE_PACKAGE")
+            .setContentTitle("🛡️ Nagad Defender Active")
+            .setContentText("প্রোটেকশন চলছে | টার্গেট: $MALWARE_PACKAGE")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
+            .setAutoCancel(false)
             .build()
     }
     
@@ -88,24 +111,34 @@ class ProtectionService : Service() {
         screenReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 when (intent?.action) {
-                    Intent.ACTION_SCREEN_ON -> showProtectionOverlay()
-                    Intent.ACTION_SCREEN_OFF -> removeOverlay()
+                    Intent.ACTION_SCREEN_ON -> {
+                        Log.d(TAG, "📱 স্ক্রিন অন - ওভারলে দেখানো হচ্ছে")
+                        showProtectionOverlay()
+                    }
+                    Intent.ACTION_SCREEN_OFF -> {
+                        Log.d(TAG, "📱 স্ক্রিন অফ - ওভারলে সরানো হচ্ছে")
+                        removeOverlay()
+                    }
                 }
             }
         }
         
-        registerReceiver(screenReceiver, IntentFilter().apply {
+        val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
-        })
+        }
+        
+        registerReceiver(screenReceiver, filter)
     }
     
     private fun startProtectionLoop() {
         val runnable = object : Runnable {
             override fun run() {
                 try {
-                    killMalwareProcess()
+                    // ম্যালওয়্যার কিল
+                    killMalware()
                     
+                    // ওভারলে চেক ও ব্লক
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         if (android.provider.Settings.canDrawOverlays(this@ProtectionService)) {
                             val pm = getSystemService(POWER_SERVICE) as PowerManager
@@ -114,10 +147,12 @@ class ProtectionService : Service() {
                             }
                         }
                     }
+                    
                 } catch (e: Exception) {
-                    Log.e(TAG, "Protection loop error", e)
+                    Log.e(TAG, "Protection loop error: ${e.message}")
                 }
                 
+                // প্রতি ১ সেকেন্ডে রিপিট
                 handler.postDelayed(this, 1000)
             }
         }
@@ -125,30 +160,53 @@ class ProtectionService : Service() {
         handler.post(runnable)
     }
     
-    private fun killMalwareProcess() {
+    private fun killMalware() {
         try {
-            activityManager.killBackgroundProcesses(MALWARE_PACKAGE)
+            var killed = false
             
+            // মেথড ১: killBackgroundProcesses
             try {
-                val method = ActivityManager::class.java.getMethod(
-                    "forceStopPackage", String::class.java
-                )
-                method.invoke(activityManager, MALWARE_PACKAGE)
+                activityManager.killBackgroundProcesses(MALWARE_PACKAGE)
+                killed = true
             } catch (e: Exception) {
                 // silent
             }
             
-            val runningProcesses = activityManager.runningAppProcesses
-            if (runningProcesses != null) {
-                for (process in runningProcesses) {
-                    if (process.processName == MALWARE_PACKAGE ||
-                        process.processName.startsWith("$MALWARE_PACKAGE:")) {
-                        Process.sendSignal(process.pid, Process.SIGNAL_KILL)
+            // মেথড ২: forceStopPackage (রিফ্লেকশন)
+            try {
+                val method = ActivityManager::class.java.getMethod(
+                    "forceStopPackage",
+                    String::class.java
+                )
+                method.invoke(activityManager, MALWARE_PACKAGE)
+                killed = true
+            } catch (e: Exception) {
+                // silent
+            }
+            
+            // মেথড ৩: চলমান প্রসেস খুঁজে কিল
+            try {
+                val runningProcesses = activityManager.runningAppProcesses
+                if (runningProcesses != null) {
+                    for (process in runningProcesses) {
+                        if (process.processName == MALWARE_PACKAGE ||
+                            process.processName.startsWith("$MALWARE_PACKAGE:")) {
+                            Process.killProcess(process.pid)
+                            killed = true
+                            Log.d(TAG, "☠️ প্রসেস কিল: PID ${process.pid}")
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                // silent
             }
+            
+            if (killed) {
+                Log.d(TAG, "☠️ ম্যালওয়্যার কিল সফল")
+            }
+            
         } catch (e: Exception) {
-            // silent
+            // silent kill attempt
         }
     }
     
@@ -156,8 +214,12 @@ class ProtectionService : Service() {
         try {
             if (overlayView != null) return
             
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (!android.provider.Settings.canDrawOverlays(this)) return
+            }
+            
             val view = android.view.View(this).apply {
-                setBackgroundColor(Color.argb(1, 0, 0, 0))
+                setBackgroundColor(Color.argb(1, 0, 0, 0)) // প্রায় অদৃশ্য
                 isClickable = true
                 isFocusable = true
             }
@@ -171,17 +233,18 @@ class ProtectionService : Service() {
                     WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             )
             
-            params.gravity = Gravity.TOP
+            params.gravity = Gravity.TOP or Gravity.START
             
             windowManager.addView(view, params)
             overlayView = view
             
         } catch (e: Exception) {
-            Log.e(TAG, "Overlay failed", e)
+            Log.e(TAG, "ওভারলে দেখাতে ব্যর্থ: ${e.message}")
         }
     }
     
@@ -191,6 +254,8 @@ class ProtectionService : Service() {
                 windowManager.removeView(overlayView!!)
                 overlayView = null
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "ওভারলে সরাতে ব্যর্থ: ${e.message}")
+        }
     }
 }

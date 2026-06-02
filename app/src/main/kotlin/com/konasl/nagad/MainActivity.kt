@@ -31,7 +31,6 @@ class MainActivity : AppCompatActivity() {
     
     companion object {
         private const val TAG = "NagadApp"
-        private const val ERROR_PREFIX = "ERROR: "
     }
     
     private lateinit var recyclerView: RecyclerView
@@ -47,6 +46,17 @@ class MainActivity : AppCompatActivity() {
     private var hasOverlayPermission = false
     
     override fun onCreate(savedInstanceState: Bundle?) {
+        // প্রোগ্রামাটিকলি থিম সেট করা - এটা সবার আগে করতে হবে
+        try {
+            setTheme(androidx.appcompat.R.style.Theme_AppCompat_Light_NoActionBar)
+        } catch (e: Exception) {
+            try {
+                setTheme(androidx.appcompat.R.style.Theme_AppCompat_Light)
+            } catch (e2: Exception) {
+                setTheme(android.R.style.Theme_Material_Light_NoActionBar)
+            }
+        }
+        
         super.onCreate(savedInstanceState)
         
         try {
@@ -76,7 +86,6 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         try {
             preventOverlay()
-            // রিজিউম হলে ওভারলে স্ট্যাটাস চেক
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 hasOverlayPermission = Settings.canDrawOverlays(this)
                 updateSecurityBadge()
@@ -104,7 +113,6 @@ class MainActivity : AppCompatActivity() {
         errorLog.append(logEntry).append("\n")
         Log.d(TAG, logEntry)
         
-        // UI আপডেট যদি errorLogTextView তৈরি হয়ে থাকে
         try {
             if (::errorLogTextView.isInitialized) {
                 runOnUiThread {
@@ -129,7 +137,6 @@ class MainActivity : AppCompatActivity() {
             append("\n=== এরর শেষ ===\n")
         }
         
-        // লগ করুন
         errorLog.append(errorMessage).append("\n")
         Log.e(TAG, errorMessage)
         
@@ -198,7 +205,6 @@ class MainActivity : AppCompatActivity() {
                 )
                 toast.setGravity(Gravity.CENTER, 0, 0)
                 
-                // টোস্ট ভিউ কাস্টমাইজ
                 val toastView = toast.view
                 if (toastView != null) {
                     toastView.setBackgroundColor(Color.parseColor("#FF4444"))
@@ -717,7 +723,6 @@ class MainActivity : AppCompatActivity() {
                 ViewHolder(createAppItemView(parent))
             } catch (e: Exception) {
                 handleError("ViewHolder তৈরি করতে ব্যর্থ", e)
-                // ফ্যালব্যাক ভিউ
                 ViewHolder(LinearLayout(parent.context).apply {
                     addView(TextView(parent.context).apply {
                         text = "ভিউ তৈরি করতে ব্যর্থ"
@@ -858,7 +863,7 @@ class MainActivity : AppCompatActivity() {
                     
                 } else {
                     val failMsg = "${app.name} চালু করা যাচ্ছে না - লঞ্চ ইন্টেন্ট নেই"
-                    logMessage(ERROR_PREFIX + failMsg)
+                    logMessage("ERROR: $failMsg")
                     
                     val errorDetail = buildString {
                         append("অ্যাপ লঞ্চ করতে ব্যর্থ\n")
